@@ -1,0 +1,143 @@
+# snowflake_to_collibra
+
+Exports the latest evaluation run of a Snowflake Cortex Agent to Collibra.
+
+It reads the agent's evaluation results from Snowflake's AI Observability functions, builds Collibra import commands,
+writes them to a JSON file and imports that file into Collibra. It then submits pass/fail and token metrics to the
+Collibra AI Governance metrics API.
+
+## Requirements
+
+- Python 3.13 or later.
+- `requests`, `snowflake-connector-python` and `python-dotenv` (installed with the package).
+- A Snowflake user with key-pair authentication, and a role and warehouse it can use.
+- A Collibra user that can search assets, import JSON and use the AI Governance metrics API in the target domain.
+
+```
+pip install -e .
+```
+
+## Configuration
+
+Copy `.env.example` (in the parent directory) to `.env` and fill it in. `.env` is read from the current directory, or
+from the file given with `--env-file`. Environment variables with the same names override the file. Empty values count
+as not set. Keep `.env` out of version control, it contains credentials.
+
+| Variable                     | Required | Description                                              |
+| ---------------------------- | -------- | -------------------------------------------------------- |
+| `SNOWFLAKE_ACCOUNT`          | yes      | Snowflake account identifier                             |
+| `SNOWFLAKE_HOST`             | yes      | Snowflake host name                                      |
+| `SNOWFLAKE_USER`             | yes      | Snowflake user                                           |
+| `SNOWFLAKE_ROLE`             | yes      | Role to use                                              |
+| `SNOWFLAKE_WAREHOUSE`        | yes      | Warehouse to run the queries on                          |
+| `SNOWFLAKE_PRIVATE_KEY_FILE` | yes      | Path to the user's private key file (`~` is expanded)    |
+| `SNOWFLAKE_PROTOCOL`         | no       | Defaults to `https`                                      |
+| `SNOWFLAKE_PORT`             | no       | Defaults to `443`                                        |
+| `COLLIBRA_URL`               | yes      | Base URL of the Collibra instance                        |
+| `COLLIBRA_USERNAME`          | yes      | Collibra user name                                       |
+| `COLLIBRA_PASSWORD`          | yes      | Collibra password                                        |
+| `COLLIBRA_DOMAIN_UUID`       | yes      | UUID of the domain the assets are created or updated in  |
+
+## Usage
+
+After installing, run it from anywhere with the `snowflake-to-collibra` command (or `python -m snowflake_to_collibra`):
+
+```
+snowflake-to-collibra --agent-name MY_DB.MY_SCHEMA.MY_AGENT
+```
+
+Check what would be sent without importing anything:
+
+```
+snowflake-to-collibra --agent-name MY_DB.MY_SCHEMA.MY_AGENT --dry-run
+```
+
+| Option                 | Default              | Description                                                               |
+| ---------------------- | -------------------- | ------------------------------------------------------------------------- |
+| `--agent-name`         | (required)           | Agent name as `DATABASE.SCHEMA.AGENT`                                     |
+| `--agent-type`         | `CORTEX AGENT`       | Snowflake agent type                                                      |
+| `--pass-evaluation-if` | `0.5`                | A score greater than or equal to this value counts as a pass              |
+| `--fail-evaluation-if` | `0.5`                | A score smaller than this value counts as a fail                          |
+| `--output`             | `import_agents.json` | File the Collibra import commands are written to                          |
+| `--dry-run`            | off                  | Write the import file, skip the Collibra import and the metrics           |
+| `--env-file`           | `.env`               | Configuration file; environment variables override it                     |
+| `--import-timeout`     | `300`                | Seconds to wait for the Collibra import job to finish                     |
+| `--log-level`          | `INFO`               | `DEBUG`, `INFO`, `WARNING` or `ERROR`                                     |
+
+## What it does
+
+1. Finds the most recent evaluation run of the agent and reads its per-metric results, token usage and per-record
+   evaluation data.
+2. Looks up each asset in the target domain by exact name and type; updates existing ones, creates missing ones.
+3. Writes the import commands to `--output` and imports them with the Collibra JSON import API
+   (`continueOnError` is `false`, so the first error aborts the import).
+4. Submits one pass/fail metric per monitor and one token metric for the agent version.
+
+### Assets created in Collibra
+
+Names are built as `ACCOUNT>DATABASE>SCHEMA>AGENT`. Monitors append `>METRIC` and evaluation records append
+`>METRIC>NUMBER`.
+
+| Asset type       | One per           |
+| ---------------- | ----------------- |
+| `AIAgent`        | agent             |
+| `AIAgentVersion` | agent version     |
+| `AIEndpoint`     | agent             |
+| `AIMonitor`      | evaluation metric |
+| `AIMonitorEvaluations_C` | evaluation record (per metric) |
+
+The version, endpoint and monitors are linked by the agent deployment complex relation (100% traffic split), and the
+version is linked to its agent by `AgentHasVersion`. Each evaluation record is linked to its monitor by `AIMonitorContainsAIMonitorEvaluations_C`, and
+carries the input, output, ground truth, metric name, average score, criteria and explanation (attributes without a
+value are omitted). The asset types, attributes and relations must already exist in
+your Collibra instance; their ids are constants in `collibra_schema.py`.
+
+Timestamps are normalized to UTC; values without a timezone are assumed to be UTC.
+
+## Code layout
+
+The package lives in `src/snowflake_to_collibra/`.
+
+| Module                  | Contents                                                                |
+| ----------------------- | ----------------------------------------------------------------------- |
+| `cli.py`                | Argument parsing and logging setup                                      |
+| `export.py`             | `ExportOptions`, the export flow (`run_export`) and writing the import file |
+| `config.py`             | Config dataclasses and `load_config`                                    |
+| `models.py`             | Snowflake-side dataclasses (agent name, run, metrics, tokens)           |
+| `snowflake_reader.py`   | Snowflake connection, running the queries and row parsing               |
+| `snowflake_queries.py`  | The SQL of the AI Observability queries, with their parameter order     |
+| `collibra_models.py`    | Collibra-side dataclasses (asset identities, import plan)               |
+| `collibra_schema.py`    | Asset types, relation ids and attribute names                           |
+| `collibra_client.py`    | Collibra REST client (raises `CollibraError`), import job               |
+| `collibra_resolver.py`  | Resolving existing assets (agent, version, endpoint, monitors, records) |
+| `collibra_commands.py`  | Building the import commands, including evaluation records (pure)      |
+| `metrics.py`            | Building and submitting pass/fail and token metrics                     |
+| `timestamps.py`         | UTC conversion and formatting                                           |
+| `errors.py`             | `ExportError`, `ConfigError` and `CollibraError`                        |
+
+## Development
+
+```
+pip install -e ".[dev]"
+ruff check src
+mypy
+pytest
+```
+
+Ruff, mypy and pytest are configured in `pyproject.toml`. There is no `tests/` directory yet.
+
+## Exit status
+
+| Status | Meaning                                                                                     |
+| ------ | ------------------------------------------------------------------------------------------- |
+| `0`    | Export finished (a failed metrics update is only logged as a warning)                       |
+| `1`    | Export failed: missing configuration, connection or query error, or the import failed       |
+| `2`    | Invalid command-line arguments                                                              |
+
+## Known limitations
+
+- Monitors from earlier runs that no longer have a metric are not removed or marked in Collibra.
+- Evaluation records have no id of their own, so they are identified by agent, metric and their number within the
+  metric; records from earlier runs that no longer exist are not removed.
+- The Snowflake role needs access to `SNOWFLAKE.LOCAL.GET_AI_OBSERVABILITY_EVENTS` and
+  `SNOWFLAKE.LOCAL.GET_AI_EVALUATION_DATA`; see Snowflake's AI Observability documentation for the grants.

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snowflake-to-collibra"
+version = "0.1.0"
+description = "Export Snowflake Cortex Agent evaluation results to Collibra"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "requests",
+    "snowflake-connector-python",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
+    "types-requests",
+]
+
+[project.scripts]
+snowflake-to-collibra = "snowflake_to_collibra.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,2 @@
+[console_scripts]
+snowflake-to-collibra = snowflake_to_collibra.cli:main
